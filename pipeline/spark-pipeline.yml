@@ -1,0 +1,7 @@
+name: medallion
+catalog: lakehouse
+database: medallion
+storage: s3://lakehouse/pipelines/medallion
+libraries:
+  - glob:
+      include: transformations/**

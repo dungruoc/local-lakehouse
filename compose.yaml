@@ -1,0 +1,249 @@
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.80
+    restart: unless-stopped
+    entrypoint: weed
+    command: server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json -volume.max=0 -master.volumeSizeLimitMB=1024
+    networks:
+      - lakehouse_net
+    ports:
+      - "${S3_PORT:-8333}:8333"
+    volumes:
+      - ./s3.json:/etc/seaweedfs/s3.json:ro
+      - seaweedfs-data:/data
+    healthcheck:
+      test: wget -qO /dev/null http://127.0.0.1:8333/status
+      interval: 5s
+      retries: 30
+ 
+  spark-master:
+    image: apache/spark:4.2.0
+    hostname: spark-master
+    restart: unless-stopped
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master
+    networks:
+      - lakehouse_net
+    ports:
+      - "${SPARK_UI_PORT:-8080}:8080"
+    healthcheck:
+      test: curl -sf http://localhost:8080 > /dev/null
+      interval: 5s
+      retries: 30
+ 
+  spark-worker:
+    image: apache/spark:4.2.0
+    hostname: spark-worker
+    restart: unless-stopped
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker --host spark-worker spark://spark-master:7077
+    networks:
+      - lakehouse_net
+    environment:
+      SPARK_WORKER_CORES: "6"
+      SPARK_WORKER_MEMORY: 4g
+    volumes:
+      - spark-work:/opt/spark/work-dir
+    depends_on:
+      spark-master:
+        condition: service_healthy
+ 
+  spark-connect:
+    image: apache/spark:4.2.0
+    hostname: spark-connect
+    restart: unless-stopped
+    command: >
+      /opt/spark/sbin/start-connect-server.sh
+      --master spark://spark-master:7077
+      --packages io.delta:delta-spark_4.2_2.13:4.4.0,io.delta:delta-iceberg_2.13:4.4.0,io.unitycatalog:unitycatalog-spark_4.2_2.13:0.6.0,org.apache.hadoop:hadoop-aws:3.5.0,org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0
+      --exclude-packages io.delta:delta-spark_4.1_2.13
+    environment:
+      SPARK_NO_DAEMONIZE: "1"
+    networks:
+      - lakehouse_net
+    ports:
+      - "${SPARK_CONNECT_PORT:-15002}:15002"
+    volumes:
+      - ./spark-conf:/opt/spark/conf
+      - spark-work:/opt/spark/work-dir
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/15002"]
+      interval: 5s
+      start_period: 15m
+
+  unity-catalog:
+    image: unitycatalog/unitycatalog:v0.6.0
+    restart: unless-stopped
+    networks:
+      - lakehouse_net
+    ports:
+      - "${UC_PORT:-8081}:8080"
+    volumes:
+      - ./server.properties:/home/unitycatalog/etc/conf/server.properties:ro
+      - uc-data:/home/unitycatalog/etc/db
+    healthcheck:
+      test: wget -qO /dev/null http://127.0.0.1:8080/api/2.1/unity-catalog/catalogs
+      interval: 5s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:4.2.0
+    restart: unless-stopped
+    profiles:
+      - disabled
+    networks:
+      - lakehouse_net
+    ports:
+      - "${KAFKA_PORT:-9092}:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:${KAFKA_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - kafka-logs:/tmp/kraft-combined-logs
+    healthcheck:
+      test: /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+      interval: 10s
+      retries: 30
+
+  airflow:
+    build:
+      dockerfile_inline: |
+        FROM apache/airflow:3.3.2-python3.12
+        RUN pip install --no-cache-dir apache-airflow==3.3.2 apache-airflow-providers-apache-spark==6.3.2 pyspark-client==4.2.0
+    command: standalone
+    restart: unless-stopped
+    profiles:
+      - disabled
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      AIRFLOW_CONN_SPARK_CONNECT_DEFAULT: '{"conn_type": "spark_connect", "host": "spark-connect", "port": 15002}'
+    networks:
+      - lakehouse_net
+    ports:
+      - "${AIRFLOW_PORT:-8085}:8080"
+    volumes:
+      - airflow-data:/opt/airflow
+      - ./dags:/opt/airflow/dags
+      - ./pipeline:/opt/airflow/pipeline
+    healthcheck:
+      test: curl -sf http://localhost:8080/api/v2/monitor/health
+      interval: 5s
+      start_period: 5m
+
+  mlflow:
+    build:
+      dockerfile_inline: |
+        FROM ghcr.io/mlflow/mlflow:v3.16.1
+        RUN pip install --no-cache-dir boto3==1.43.93
+    restart: unless-stopped
+    profiles:
+      - disabled
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000 --workers 1
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination s3://lakehouse/mlflow
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://seaweedfs:8333
+      AWS_ACCESS_KEY_ID: lakehouse
+      AWS_SECRET_ACCESS_KEY: lakehouse-secret
+    networks:
+      - lakehouse_net
+    ports:
+      - "${MLFLOW_PORT:-5001}:5000"
+    volumes:
+      - mlflow-data:/mlflow
+    healthcheck:
+      test: python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"
+      interval: 5s
+      retries: 30
+
+  hive-postgres:
+    image: postgres
+    restart: unless-stopped
+    container_name: hive-postgres
+    hostname: hive-postgres
+    environment:
+      POSTGRES_DB: 'metastore_db'
+      POSTGRES_USER: 'hive'
+      POSTGRES_PASSWORD: 'hive_secret'
+    networks:
+      - hive_net
+    volumes:
+      - hive-postgres-data:/var/lib/postgresql
+
+  hive-metastore:
+    # image: apache/hive:4.2.1
+    image: apache/hive:standalone-metastore-4.2.1
+    restart: unless-stopped
+    container_name: hive-metastore
+    hostname: hive-metastore
+    environment:
+      HADOOP_OPTIONAL_TOOLS: 'hadoop-aws'
+      HADOOP_CLASSPATH: /opt/hadoop/share/hadoop/tools/lib/*
+      DB_DRIVER: postgres
+      SERVICE_NAME: 'metastore'
+      SERVICE_OPTS: >
+        -Xmx1G
+        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-postgres:5432/metastore_db
+        -Djavax.jdo.option.ConnectionUserName=hive
+        -Djavax.jdo.option.ConnectionPassword=hive_secret
+    ports:
+        - '9001:9001'
+        - '9083:9083'
+    volumes:
+        - hive-warehouse:/opt/hive/data/warehouse
+        - type: bind
+          source: ./hive/ext-jars/postgresql-42.7.14.jar
+          target: /opt/hive/lib/postgres.jar
+        - type: bind
+          source: ./hive/ext-jars/bundle-2.42.25.jar
+          target: /opt/hadoop/share/hadoop/common/lib/bundle-2.42.25.jar
+        # - ./hive/ext-jars:/tmp/ext-jars:ro
+        - ./hive/conf/metastore-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+        - ./hive/conf/metastore-site.xml:/opt/hive/conf/core-site.xml:ro
+    networks:
+      - hive_net
+      - lakehouse_net
+
+  trino:
+    image: trinodb/trino:484
+    container_name: trino
+    environment:
+      CATALOG_MANAGEMENT: dynamic
+    depends_on:
+      - unity-catalog
+    networks:
+      - lakehouse_net
+    ports:
+      - "${TRINO_PORT:-8090}:8080" # Trino UI & JDBC/CLI port mapped to 8081 to avoid conflict with UC
+    volumes:
+      - ./trino-catalog:/etc/trino/catalog:ro
+
+volumes:
+  seaweedfs-data:
+  spark-work:
+  uc-data:
+  kafka-logs:
+  airflow-data:
+  mlflow-data:
+  hive-postgres-data:
+  hive-warehouse:
+
+networks:
+  lakehouse_net:
+  hive_net:
+    internal: true
+
+  
