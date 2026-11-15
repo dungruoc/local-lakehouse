@@ -1,0 +1,9 @@
+{
+  "fields": [
+    { "metadata": {}, "name": "brand", "nullable": true, "type": "string" },
+    { "metadata": {}, "name": "orders", "nullable": true, "type": "long" },
+    { "metadata": {}, "name": "revenue", "nullable": true, "type": "double" },
+    { "metadata": {}, "name": "avg_order", "nullable": true, "type": "double" }
+  ],
+  "type": "struct"
+}

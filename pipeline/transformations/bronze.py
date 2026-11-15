@@ -2,7 +2,8 @@
  
 from pyspark import pipelines as dp
 from pyspark.sql import SparkSession
- 
+from pyspark.sql import functions as f
+
 spark = SparkSession.active()
  
 # Unity Catalog manages these tables: it picks their location under the
@@ -16,7 +17,9 @@ MANAGED = {
  
 @dp.materialized_view(format="delta", table_properties=MANAGED)
 def orders_bronze():
-    return spark.read.parquet("s3://lakehouse/landing/orders/")
+    return spark.read.parquet("s3://lakehouse/landing/orders/").withColumn(
+        "event_date", f.to_date("ts")
+    )
  
  
 @dp.materialized_view(format="delta", table_properties=MANAGED)

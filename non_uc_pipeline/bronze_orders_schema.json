@@ -1,0 +1,17 @@
+{
+  "fields": [
+    { "metadata": {}, "name": "event_id", "nullable": true, "type": "string" },
+    {
+      "metadata": {},
+      "name": "event_type",
+      "nullable": true,
+      "type": "string"
+    },
+    { "metadata": {}, "name": "ts", "nullable": true, "type": "string" },
+    { "metadata": {}, "name": "location_id", "nullable": true, "type": "long" },
+    { "metadata": {}, "name": "order_id", "nullable": true, "type": "string" },
+    { "metadata": {}, "name": "body", "nullable": true, "type": "string" },
+    { "metadata": {}, "name": "event_date", "nullable": true, "type": "date" }
+  ],
+  "type": "struct"
+}

@@ -1,8 +1,9 @@
 # Resources
 
+This repo is to reproduce the tutorial:
 [TUTORIAL: How to Build an Open Lakehouse on Your Laptop](https://systemsnull.net/posts/data-engineering-ai/open-lakehouse-on-your-laptop)
 
-
+But I add an extra section for putting Trino and its catalogs for query engine.
 
 ## Basic Requirements
 
@@ -19,8 +20,9 @@
 
 # Storage: SeaweedFS
 
+## We create first a bucket for our lakehouse
 ```bash
-$ python create_bucket.py
+·> python 01_create_lakehouse_bucket.py
 hello.txt 17 bytes
 ```
 
@@ -37,15 +39,7 @@ flowchart LR
 
 # Compute: Spark 4.2 and Spark Connect
 
-```bash
-$ python hello_spark.py
-Connected to Spark 4.2.0 at sc://localhost:15002
-+------------+
-|       total|
-+------------+
-|499999500000|
-+------------+
-```
+Our lakehouse use Spark as compting engine which can read/write data to Seaweedfs
 
 ```mermaid
 flowchart LR
@@ -60,11 +54,25 @@ flowchart LR
   sp_CL -->|"S3A"| sp_SW
 ```
 
+
+> We test a dummy Spark job
+```bash
+·> python 02_hello_spark.py
+Connected to Spark 4.2.0 at sc://localhost:15002
++------------+
+|       total|
++------------+
+|499999500000|
++------------+
+```
+
+
 # Some data: a ghost-kitchen generator
 
-```bash
-$ python generate_orders.py files
+This is a script to generate some data logs, writing to landing storage
 
+```bash
+·> python 03_generate_orders.py files
 landing/orders/2026-09-01.parquet  4,720 rows
 landing/orders/2026-09-02.parquet  4,382 rows
 landing/orders/2026-09-03.parquet  5,479 rows
@@ -76,9 +84,10 @@ landing/locations/locations.parquet  4 rows
 ```
 
 # Table format: Delta Lake
+Now, we use spark to read data from landing storage and write into a delta table at location `TABLE_PATH = "s3://lakehouse/tables/orders_raw"`
 
 ```bash
-> python load_orders.py
+·> python 04_load_orders.py
 +-------+---------+-------------+
 |version|operation|numOutputRows|
 +-------+---------+-------------+
@@ -93,10 +102,10 @@ tables/orders_raw/_delta_log/00000000000000000000.json
 tables/orders_raw/_delta_log/00000000000000000001.crc
 tables/orders_raw/_delta_log/00000000000000000001.json
 tables/orders_raw/_delta_log/_staged_commits/
-tables/orders_raw/part-00000-310fdb81-02f3-4e58-a002-8998cc5ab069-c000.snappy.parquet
-tables/orders_raw/part-00000-f8fbbd75-7a42-48e3-9319-fc7c3161b662-c000.snappy.parquet
-tables/orders_raw/part-00001-ad6f0421-7440-4fe6-8a7d-4baaab7b69b8-c000.snappy.parquet
-tables/orders_raw/part-00001-f96b4eb7-0e19-45bc-952e-054bcc0237a8-c000.snappy.parquet
+tables/orders_raw/part-00000-493168f5-9d04-4ce9-9dad-ee5a503af74f-c000.snappy.parquet
+tables/orders_raw/part-00000-5ac9333a-1868-493b-8d9a-63c127d2995f-c000.snappy.parquet
+tables/orders_raw/part-00001-6b619c3f-8a33-46d1-ae55-5d8e3a5882bf-c000.snappy.parquet
+tables/orders_raw/part-00001-db641e30-998d-4c19-bbfa-dece791034ae-c000.snappy.parquet
 ```
 
 ```mermaid
@@ -115,8 +124,15 @@ flowchart LR
 
 # Catalog: Unity Catalog OSS
 
+The delta table exist now in S3 storage, we can query it with delta location, but we can register it into Unity Catalog to ease the management.
+
+The following script will
+- create a catalog `lakehouse` at `s3://lakehouse/managed`
+- create a schema `lakehouse.tutorial`
+- register the delta table created in S3 bucket above as `lakehouse.tutorial.orders_raw`
+
 ```bash
-·> python register_orders.py
+·> python 05_register_orders.py
 +----------+------+
 |event_date|events|
 +----------+------+
@@ -146,14 +162,18 @@ flowchart LR
 
 # Open formats: read the same table as Iceberg
 
+We can enable Iceberg metadata for the same Delta table with Uniform
 ```bash
-·> python enable_uniform.py
-tables/orders_raw/metadata/00000-6f2dfa0b-7dc4-409f-917b-bbd10f8b42da.metadata.json
-tables/orders_raw/metadata/62785e14-1802-4898-a33f-70cb8a65db5f-m0.avro
-tables/orders_raw/metadata/snap-8633528795127830553-1-62785e14-1802-4898-a33f-70cb8a65db5f.avro
+·> python 06_enable_uniform.py
+tables/orders_raw/metadata/00000-2a00378b-76c7-4058-96b5-b49d05e2520a.metadata.json
+tables/orders_raw/metadata/f2ff3caa-d926-4d7a-a33e-4cc8ef48d5b8-m0.avro
+tables/orders_raw/metadata/snap-7000200278295571351-1-f2ff3caa-d926-4d7a-a33e-4cc8ef48d5b8.avro
+```
 
-·> python read_iceberg.py
-Reading s3://lakehouse/tables/orders_raw/metadata/00000-6f2dfa0b-7dc4-409f-917b-bbd10f8b42da.metadata.json
+Then we can read as Iceberg clients
+```bash
+·> python 07_read_iceberg.py
+Reading s3://lakehouse/tables/orders_raw/metadata/00000-2a00378b-76c7-4058-96b5-b49d05e2520a.metadata.json
 
 PyIceberg: 34,021 rows (Iceberg v2, converted from Delta version 2)
 
@@ -190,6 +210,8 @@ flowchart LR
 
 # Pipelines: bronze, silver, gold with Spark Declarative Pipelines
 
+> Spark Declarative Pipelines (SDP) lets you declare each table as a query; SDP works out the dependency graph from the tables each query reads and materializes them in order. 
+
 ```mermaid
 flowchart LR
   classDef new fill:#d97706,fill-opacity:0.72,stroke:#d97706,color:#ffffff
@@ -208,15 +230,72 @@ flowchart LR
 ```
 
 ```bash
-> python prepare_medallion.py
-> SPARK_REMOTE=sc://localhost:15002 python -m pyspark.pipelines.cli dry-run --spec pipeline/spark-pipeline.yml
-> SPARK_REMOTE=sc://localhost:15002 python -m pyspark.pipelines.cli run --spec pipeline/spark-pipeline.yml
+·> ./08_run_pipeline.sh
+lakehouse.medallion is ready
+2026-11-15 21:24:42: Loading pipeline spec from pipeline/spark-pipeline.yml...
+2026-11-15 21:24:42: Creating Spark session...
+2026-11-15 21:24:42: Creating dataflow graph...
+2026-11-15 21:24:42: Registering graph elements...
 ...
-2026-11-11 14:13:11: Flow lakehouse.medallion.revenue_by_city_day has COMPLETED.
-2026-11-11 14:13:11: Flow lakehouse.medallion.revenue_by_brand has COMPLETED.
-2026-11-11 14:13:13: Run is COMPLETED.
+2026-11-15 21:24:50: Starting run...
+2026-11-15 14:25:04: Flow lakehouse.medallion.locations is QUEUED.
+2026-11-15 14:25:04: Flow lakehouse.medallion.orders_silver is QUEUED.
+2026-11-15 14:25:04: Flow lakehouse.medallion.revenue_by_brand is QUEUED.
+2026-11-15 14:25:04: Flow lakehouse.medallion.revenue_by_city_day is QUEUED.
+2026-11-15 14:25:04: Flow lakehouse.medallion.orders_bronze is QUEUED.
+2026-11-15 14:25:04: Flow lakehouse.medallion.orders_bronze is PLANNING.
+2026-11-15 14:25:04: Flow lakehouse.medallion.orders_bronze is STARTING.
+2026-11-15 14:25:04: Flow lakehouse.medallion.orders_bronze is RUNNING.
+2026-11-15 14:25:04: Flow lakehouse.medallion.locations is PLANNING.
+2026-11-15 14:25:04: Flow lakehouse.medallion.locations is STARTING.
+2026-11-15 14:25:04: Flow lakehouse.medallion.locations is RUNNING.
+2026-11-15 14:25:09: Flow lakehouse.medallion.orders_bronze has COMPLETED.
+2026-11-15 14:25:09: Flow lakehouse.medallion.locations has COMPLETED.
+2026-11-15 14:25:09: Flow lakehouse.medallion.orders_silver is PLANNING.
+2026-11-15 14:25:09: Flow lakehouse.medallion.orders_silver is STARTING.
+2026-11-15 14:25:09: Flow lakehouse.medallion.orders_silver is RUNNING.
+2026-11-15 14:25:16: Flow lakehouse.medallion.orders_silver has COMPLETED.
+2026-11-15 14:25:17: Flow lakehouse.medallion.revenue_by_city_day is PLANNING.
+2026-11-15 14:25:17: Flow lakehouse.medallion.revenue_by_city_day is STARTING.
+2026-11-15 14:25:17: Flow lakehouse.medallion.revenue_by_city_day is RUNNING.
+2026-11-15 14:25:17: Flow lakehouse.medallion.revenue_by_brand is PLANNING.
+2026-11-15 14:25:17: Flow lakehouse.medallion.revenue_by_brand is STARTING.
+2026-11-15 14:25:17: Flow lakehouse.medallion.revenue_by_brand is RUNNING.
+2026-11-15 14:25:21: Flow lakehouse.medallion.revenue_by_city_day has COMPLETED.
+2026-11-15 14:25:21: Flow lakehouse.medallion.revenue_by_brand has COMPLETED.
+2026-11-15 14:25:23: Run is COMPLETED.
+```
 
-·> python read_gold.py
+The run produce data in bronze, silver, gold tables. We can see as bellow that the bronze table is created identical to the delta table we created above from landing data.
+
+```bash
+·> python 09_read_gold.py
+=========== BRONZE TABLES ==========
++----------+------+
+|event_date|events|
++----------+------+
+|2026-09-01|  4720|
+|2026-09-02|  4382|
+|2026-09-03|  5479|
+|2026-09-04|  4508|
+|2026-09-05|  5194|
+|2026-09-06|  4962|
+|2026-09-07|  4776|
++----------+------+
+
++----------+------+
+|event_date|events|
++----------+------+
+|2026-09-01|  4720|
+|2026-09-02|  4382|
+|2026-09-03|  5479|
+|2026-09-04|  4508|
+|2026-09-05|  5194|
+|2026-09-06|  4962|
+|2026-09-07|  4776|
++----------+------+
+
+=========== GOLD TABLES ==========
 +-------------+------+---------+---------+
 |        brand|orders|  revenue|avg_order|
 +-------------+------+---------+---------+
@@ -227,11 +306,11 @@ flowchart LR
 |    Taco Loco|  2168| 71548.53|     33.0|
 +-------------+------+---------+---------+
 
-locations MANAGED DELTA
-orders_bronze MANAGED DELTA
-orders_silver MANAGED DELTA
-revenue_by_brand MANAGED DELTA
-revenue_by_city_day MANAGED DELTA
+locations MANAGED DELTA s3://lakehouse/managed/__unitystorage/catalogs/ca354fda-466e-4e8f-bd08-8abc26629c21/tables/3d71f6a6-6177-4acf-bf43-91b666f27c50
+orders_bronze MANAGED DELTA s3://lakehouse/managed/__unitystorage/catalogs/ca354fda-466e-4e8f-bd08-8abc26629c21/tables/f1d85cd3-ca69-41fe-a803-c494b3c2e535
+orders_silver MANAGED DELTA s3://lakehouse/managed/__unitystorage/catalogs/ca354fda-466e-4e8f-bd08-8abc26629c21/tables/117a82ed-a1fc-41dc-9e73-0e130117c500
+revenue_by_brand MANAGED DELTA s3://lakehouse/managed/__unitystorage/catalogs/ca354fda-466e-4e8f-bd08-8abc26629c21/tables/203a9d4b-1711-4e81-a6e1-8ec1a9eb766c
+revenue_by_city_day MANAGED DELTA s3://lakehouse/managed/__unitystorage/catalogs/ca354fda-466e-4e8f-bd08-8abc26629c21/tables/52d7fea9-bb6e-41ca-b85c-93fc08fe5a60
 ```
 
 # Streaming: Real-Time Mode and micro-batches
@@ -443,4 +522,16 @@ flowchart LR
   af_UC["UC :8081"<br/>container :8080]:::old
   af_AF -->|"REST"| af_SC
   af_SC -->|"REST"| af_UC
+```
+
+# Trino Set-Up
+
+## Iceberg REST catalog
+
+Seaweedfs supports a REST API for serving Iceberg catalog.
+But we need a Table S3 bucket, not a ordinary S3 bucket
+
+```sh
+> docker compose exec seaweedfs weed shell
+> s3tables.bucket -create -name iceberg-data -account 000000000000 -format ICEBERG
 ```

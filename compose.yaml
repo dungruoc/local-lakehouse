@@ -1,13 +1,14 @@
 services:
   seaweedfs:
-    image: chrislusf/seaweedfs:3.80
+    image: chrislusf/seaweedfs:4.53
     restart: unless-stopped
     entrypoint: weed
-    command: server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json -volume.max=0 -master.volumeSizeLimitMB=1024
+    command: mini -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json -volume.max=0 -master.volumeSizeLimitMB=1024
     networks:
       - lakehouse_net
     ports:
       - "${S3_PORT:-8333}:8333"
+      - "${ICEBERG_REST:-8181}:8181"
     volumes:
       - ./s3.json:/etc/seaweedfs/s3.json:ro
       - seaweedfs-data:/data

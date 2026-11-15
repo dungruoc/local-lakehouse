@@ -1,16 +1,11 @@
 """Read orders_raw as an Iceberg table with PyIceberg and DuckDB. No Spark involved."""
  
 import duckdb
-from common import S3_ENDPOINT, S3_KEY, S3_SECRET, s3
+from common import S3_ENDPOINT, S3_KEY, S3_SECRET, s3_iceberg_get_latest_metafile
 from pyiceberg.table import StaticTable
  
 # The table's current Iceberg metadata is the newest metadata.json UniForm wrote.
-listing = s3().list_objects_v2(Bucket="lakehouse", Prefix="tables/orders_raw/metadata/")
-newest = max(
-    (obj for obj in listing["Contents"] if obj["Key"].endswith(".metadata.json")),
-    key=lambda obj: obj["LastModified"],
-)
-location = f"s3://lakehouse/{newest['Key']}"
+location = s3_iceberg_get_latest_metafile(bucket_name="lakehouse", table_location="tables/orders_raw")
 print(f"Reading {location}\n")
  
 table = StaticTable.from_metadata(location, properties={
