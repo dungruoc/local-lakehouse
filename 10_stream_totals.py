@@ -35,7 +35,8 @@ query = (
     totals.writeStream.queryName("live_totals")
     .format("delta")
     .outputMode("complete")  # each batch rewrites the four rows with the current totals
-    .option("checkpointLocation", "/opt/spark/work-dir/checkpoints/live_totals")
+    .option("checkpointLocation", "s3://checkpoints/live_totals")
+    # .option("checkpointLocation", "/opt/spark/work-dir/checkpoints/live_totals")
     .trigger(processingTime="1 second")
     .toTable("lakehouse.tutorial.live_totals")
 )

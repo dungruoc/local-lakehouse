@@ -334,6 +334,8 @@ flowchart LR
   ks_SF -->|"every second"| ks_T
 ```
 
+## Create Kafka topics
+
 ```bash
 > docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --topic orders --partitions 2
 Created topic orders.
@@ -341,24 +343,34 @@ Created topic orders.
 Created topic orders-clean.
 ```
 
+## Create checkpoint bucket in S3 for streaming job
+
 ```bash
-·> python stream_clean.py
+·> python script_s3_create_bucket.py checkpoints
+```
+
+## Launch the Kafka consumers
+```bash
+·> python 10_stream_clean.py
 orders -> orders-clean, in Real-Time Mode. Ctrl+C to stop.
 ```
 
 ```bash
-·> python stream_totals.py
+·> python 10_stream_totals.py
 orders -> lakehouse.tutorial.live_totals, every second. Ctrl+C to stop.
 ```
 
+## Launch the Producer for generating orders
 ```bash
-·> python generate_orders.py stream
+·> python 03_generate_orders.py stream
 sent 1,000 events
 sent 2,000 events
 sent 3,000 events
-sent 3,947 events to the topic orders
+sent 3,746 events to the topic orders
 ```
 
+## Checking
+We can check the message produced in Kafka topic `orders-clean`
 ```bash
 ·> docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic orders-clean --from-beginning --max-messages 3
 {"event_id":"7b8cfc6245-0","location_id":3,"brand":"Curry House","total":83.14,"received_ms":1794406647325}
@@ -367,22 +379,33 @@ sent 3,947 events to the topic orders
 Processed a total of 3 messages
 ```
 
+And we can check the checkpoint folders in S3
+
 ```bash
-·> python check_stream.py
+·> python script_s3_list_objects.py checkpoints orders_clean | wc -l
+     221
+·> python script_s3_list_objects.py checkpoints live_totals | wc -l
+     221
+```
+
+And compare with messages produced in delta table
+
+```bash
+·> python 11_check_stream.py
 +-----------+------+--------+-----------------------+
 |location_id|orders|revenue |last_order_at          |
 +-----------+------+--------+-----------------------+
-|1          |304   |16092.46|2026-11-11 14:18:57.511|
-|2          |322   |16570.2 |2026-11-11 14:18:57.603|
-|3          |321   |17611.78|2026-11-11 14:18:57.077|
-|4          |325   |17308.11|2026-11-11 14:18:57.321|
+|1          |271   |13893.38|2026-11-18 15:55:01.759|
+|2          |336   |17073.44|2026-11-18 15:55:01.875|
+|3          |313   |16325.25|2026-11-18 15:55:01.709|
+|4          |286   |14751.55|2026-11-18 15:55:01.803|
 +-----------+------+--------+-----------------------+
 
-order_created records sent:        1,308
-distinct order_created event ids:  1,272
-orders in live_totals:             1,272
+order_created records sent:        1,243
+distinct order_created event ids:  1,206
+orders in live_totals:             1,206
 
-orders-clean: 1,308 records, p50 1 ms, p99 15 ms in Spark
+orders-clean: 1,243 records, p50 1 ms, p99 104 ms in Spark
 ```
 
 # Orchestration: Airflow runs the pipeline and the maintenance
@@ -534,4 +557,22 @@ But we need a Table S3 bucket, not a ordinary S3 bucket
 ```sh
 > docker compose exec seaweedfs weed shell
 > s3tables.bucket -create -name iceberg-data -account 000000000000 -format ICEBERG
+```
+
+# Profiles
+
+We can launch docker compose services with profiles, for example for seaweedfs storage only:
+```bash
+> docker compose --profile storage up -d --wait
+```
+and stop it
+
+```bash
+> docker compose --profile storage down
+```
+
+We can stop all profiles
+
+```bash
+·> docker compose --profile "*" down
 ```

@@ -4,6 +4,8 @@ services:
     restart: unless-stopped
     entrypoint: weed
     command: mini -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json -volume.max=0 -master.volumeSizeLimitMB=1024
+    profiles:
+      - storage
     networks:
       - lakehouse_net
     ports:
@@ -22,6 +24,8 @@ services:
     hostname: spark-master
     restart: unless-stopped
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master
+    profiles:
+      - spark
     networks:
       - lakehouse_net
     ports:
@@ -36,6 +40,8 @@ services:
     hostname: spark-worker
     restart: unless-stopped
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker --host spark-worker spark://spark-master:7077
+    profiles:
+      - spark
     networks:
       - lakehouse_net
     environment:
@@ -56,6 +62,8 @@ services:
       --master spark://spark-master:7077
       --packages io.delta:delta-spark_4.2_2.13:4.4.0,io.delta:delta-iceberg_2.13:4.4.0,io.unitycatalog:unitycatalog-spark_4.2_2.13:0.6.0,org.apache.hadoop:hadoop-aws:3.5.0,org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0
       --exclude-packages io.delta:delta-spark_4.1_2.13
+    profiles:
+      - spark
     environment:
       SPARK_NO_DAEMONIZE: "1"
     networks:
@@ -76,6 +84,8 @@ services:
   unity-catalog:
     image: unitycatalog/unitycatalog:v0.6.0
     restart: unless-stopped
+    profiles:
+      - unity_catalog
     networks:
       - lakehouse_net
     ports:
@@ -92,7 +102,7 @@ services:
     image: apache/kafka:4.2.0
     restart: unless-stopped
     profiles:
-      - disabled
+      - streaming
     networks:
       - lakehouse_net
     ports:
@@ -124,7 +134,7 @@ services:
     command: standalone
     restart: unless-stopped
     profiles:
-      - disabled
+      - airflow
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
@@ -149,7 +159,7 @@ services:
         RUN pip install --no-cache-dir boto3==1.43.93
     restart: unless-stopped
     profiles:
-      - disabled
+      - mlflow
     command: >
       mlflow server --host 0.0.0.0 --port 5000 --workers 1
       --backend-store-uri sqlite:////mlflow/mlflow.db
@@ -174,6 +184,8 @@ services:
     restart: unless-stopped
     container_name: hive-postgres
     hostname: hive-postgres
+    profiles:
+      - trino
     environment:
       POSTGRES_DB: 'metastore_db'
       POSTGRES_USER: 'hive'
@@ -189,6 +201,10 @@ services:
     restart: unless-stopped
     container_name: hive-metastore
     hostname: hive-metastore
+    depends_on:
+      - hive-postgres
+    profiles:
+      - trino
     environment:
       HADOOP_OPTIONAL_TOOLS: 'hadoop-aws'
       HADOOP_CLASSPATH: /opt/hadoop/share/hadoop/tools/lib/*
@@ -216,15 +232,17 @@ services:
         - ./hive/conf/metastore-site.xml:/opt/hive/conf/core-site.xml:ro
     networks:
       - hive_net
-      - lakehouse_net
+      # - lakehouse_net
 
   trino:
     image: trinodb/trino:484
     container_name: trino
+    profiles:
+      - trino
     environment:
       CATALOG_MANAGEMENT: dynamic
     depends_on:
-      - unity-catalog
+      - hive-metastore
     networks:
       - lakehouse_net
     ports:

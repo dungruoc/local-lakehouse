@@ -30,7 +30,8 @@ query = (
     .format("kafka")
     .option("kafka.bootstrap.servers", "kafka:9092")
     .option("topic", "orders-clean")
-    .option("checkpointLocation", "/opt/spark/work-dir/checkpoints/orders_clean")
+    .option("checkpointLocation", "s3://checkpoints/orders_clean")
+    # .option("checkpointLocation", "/opt/spark/work-dir/checkpoints/orders_clean")
     .outputMode("update")  # the output mode Real-Time Mode supports
     .trigger(realTime="5 minutes")  # how often to checkpoint, not a latency target
     .start()

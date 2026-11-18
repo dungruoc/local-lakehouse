@@ -61,6 +61,9 @@ def s3_create_folder(bucket_name, folder_path):
     client.put_object(Bucket=bucket_name,
                       Key=folder_path + '/')
 
+def s3_list_object(bucket_name, prefix):
+    return s3().list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+
 def s3_iceberg_get_latest_metafile(bucket_name, table_location):
     # The table's current Iceberg metadata is the newest metadata.json UniForm wrote.
     listing = s3().list_objects_v2(Bucket=bucket_name, Prefix=f"{table_location}/metadata/")
