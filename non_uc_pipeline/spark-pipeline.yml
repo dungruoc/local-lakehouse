@@ -1,5 +1,0 @@
-name: medallion
-storage: s3://lakehouse/pipelines/non_uc_medallion
-libraries:
-  - glob:
-      include: transformations/**

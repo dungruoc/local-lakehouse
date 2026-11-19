@@ -408,7 +408,291 @@ orders in live_totals:             1,206
 orders-clean: 1,243 records, p50 1 ms, p99 104 ms in Spark
 ```
 
+
+# Trino Set-Up
+
+## Use Hive Metastore as catalog for Delta tables
+
+Requirements: Hive metastore needs extra Jar files for
+- postgres client
+- AWS sdk bundle for S3 client
+- XML config for metastore modules
+
+file `metastore-site.xml`:
+```xml
+<?xml version="1.0"?>
+<configuration>
+    <property>
+        <name>fs.s3.impl</name>
+        <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+    </property>
+
+    <property>
+        <name>fs.s3a.endpoint</name>
+        <value>http://seaweedfs:8333</value>
+    </property>
+
+    <property>
+        <name>fs.s3a.endpoint.region</name>
+        <value>us-east-1</value>
+    </property>
+
+    <property>
+        <name>fs.s3a.access.key</name>
+        <value>lakehouse</value>
+    </property>
+
+    <property>
+        <name>fs.s3a.secret.key</name>
+        <value>lakehouse-secret</value>
+    </property>
+
+    <property>
+        <name>fs.s3a.path.style.access</name>
+        <value>true</value>
+    </property>
+
+    <property>
+        <name>fs.s3a.connection.ssl.enabled</name>
+        <value>false</value>
+    </property>
+</configuration>
+```
+then the container of Metastore needs to mount the jar files with some settings:
+
+```yaml
+services:
+  ....
+  hive-metastore:
+    # image: apache/hive:4.2.1
+    image: apache/hive:standalone-metastore-4.2.1
+    restart: unless-stopped
+    container_name: hive-metastore
+    hostname: hive-metastore
+    depends_on:
+      - hive-postgres
+    profiles:
+      - trino
+    environment:
+      HADOOP_OPTIONAL_TOOLS: 'hadoop-aws'
+      HADOOP_CLASSPATH: /opt/hadoop/share/hadoop/tools/lib/*
+      DB_DRIVER: postgres
+      SERVICE_NAME: 'metastore'
+      SERVICE_OPTS: >
+        -Xmx1G
+        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-postgres:5432/metastore_db
+        -Djavax.jdo.option.ConnectionUserName=hive
+        -Djavax.jdo.option.ConnectionPassword=hive_secret
+    ports:
+        - '9001:9001'
+        - '9083:9083'
+    volumes:
+        - hive-warehouse:/opt/hive/data/warehouse
+        - type: bind
+          source: ./hive/ext-jars/postgresql-42.7.14.jar
+          target: /opt/hive/lib/postgres.jar
+        - type: bind
+          source: ./hive/ext-jars/bundle-2.42.25.jar
+          target: /opt/hadoop/share/hadoop/common/lib/bundle-2.42.25.jar
+        # - ./hive/ext-jars:/tmp/ext-jars:ro
+        - ./hive/conf/metastore-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+        - ./hive/conf/metastore-site.xml:/opt/hive/conf/core-site.xml:ro
+    networks:
+      - hive_net
+      - lakehouse_net
+
+```
+
+
+Create a delta catalog with Hive thrift server
+
+```conf
+connector.name=delta_lake
+hive.metastore.uri=thrift://hive-metastore:9083
+
+delta.register-table-procedure.enabled=true
+
+fs.s3.enabled=true
+s3.endpoint=http://seaweedfs:8333
+s3.region=us-east-1
+s3.path-style-access=true
+s3.aws-access-key=lakehouse
+s3.aws-secret-key=lakehouse-secret
+```
+
+Then we can register a delta table with
+
+```sql
+CALL delta_lake.system.register_table(
+    schema_name => 'default',
+    table_name => 'orders_raw',
+    table_location => 's3://lakehouse/tables/orders_raw'
+);
+```
+then query the delta table from Hive catalog in Trino:
+
+```sql
+trino> select count(1) from delta_lake.default.orders_raw;
+ _col0
+-------
+ 34021
+(1 row)
+
+Query 20261119_114518_00002_a52nh, FINISHED, 1 node
+Splits: 12 total, 12 done (100.00%)
+0.17 [34K rows, 129B] [206K rows/s, 782B/s]
+```
+
+### We can create a new schema
+
+```sql
+trino> CREATE SCHEMA delta_lake.analytics
+    -> WITH (location = 's3://lakehouse/schemas/analytics/');
+CREATE SCHEMA
+trino> CREATE OR REPLACE TABLE delta_lake.analytics.orders_raw_10
+    -> AS select * from delta_lake.default.orders_raw limit 10;
+CREATE TABLE: 10 rows
+trino> select * from delta_lake.analytics.orders_raw_10;
+   event_id   |  event_type   |         ts          | location_id |  order_id  |                          body                         >
+--------------+---------------+---------------------+-------------+------------+------------------------------------------------------->
+ 6754a26b65-0 | order_created | 2026-09-04T14:27:51 |           2 | 6754a26b65 | {"brand": "Taco Loco", "items": 3, "total": 41.69}    >
+ 6754a26b65-1 | order_ready   | 2026-09-04T14:38:51 |           2 | 6754a26b65 | {"brand": "Taco Loco", "items": 3, "total": 41.69}    >
+ 6754a26b65-2 | delivered     | 2026-09-04T15:08:51 |           2 | 6754a26b65 | {"brand": "Taco Loco", "items": 3, "total": 41.69}    >
+ bf755aaa84-0 | order_created | 2026-09-04T16:01:48 |           1 | bf755aaa84 | {"brand": "Sushi Express", "items": 2, "total": 62.03}>
+ bf755aaa84-1 | order_ready   | 2026-09-04T16:17:48 |           1 | bf755aaa84 | {"brand": "Sushi Express", "items": 2, "total": 62.03}>
+ bf755aaa84-2 | delivered     | 2026-09-04T16:46:48 |           1 | bf755aaa84 | {"brand": "Sushi Express", "items": 2, "total": 62.03}>
+ bf755aaa84-2 | delivered     | 2026-09-04T16:46:48 |           1 | bf755aaa84 | {"brand": "Sushi Express", "items": 2, "total": 62.03}>
+ 49995e1869-0 | order_created | 2026-09-04T21:23:15 |           1 | 49995e1869 | {"brand": "Pizza Planet", "items": 2, "total": 33.97} >
+ 49995e1869-1 | order_ready   | 2026-09-04T21:39:15 |           1 | 49995e1869 | {"brand": "Pizza Planet", "items": 2, "total": 33.97} >
+ 49995e1869-2 | delivered     | 2026-09-04T21:50:15 |           1 | 49995e1869 | {"brand": "Pizza Planet", "items": 2, "total": 33.97} >
+(10 rows)
+```
+
+The delta table was automatically created in the schema folder:
+
+```sql
+trino> show create table delta_lake.analytics.orders_raw_10;
+                                          Create Table
+-------------------------------------------------------------------------------------------------
+ CREATE TABLE delta_lake.analytics.orders_raw_10 (
+    event_id varchar,
+    event_type varchar,
+    ts varchar,
+    location_id bigint,
+    order_id varchar,
+    body varchar,
+    event_date date
+ )
+ WITH (
+    location = 's3://lakehouse/schemas/analytics/orders_raw_10-75b4066b016b46e39bd5b0f11d98ae15'
+ )
+(1 row)
+```
+
+## Delta table managed by Unity Catalog
+
+Note that we cannot register the tables managed by Unity Catalog into the new Hive catalog.
+
+## Iceberg REST catalog
+
+Seaweedfs supports a REST API for serving Iceberg catalog.
+But we need a Table S3 bucket, not a ordinary S3 bucket
+
+```bash
+·> python script_s3table_create_bucket.py iceberg-data
+{'ResponseMetadata': {'RequestId': '18E97080C0E6AE0E41471EEA', 'HostId': '', 'HTTPStatusCode': 200, 'HTTPHeaders': {'content-type': 'application/x-amz-json-1.1', 'server': 'SeaweedFS 30GB 4.53', 'x-amz-request-id': '18E97080C0E6AE0E41471EEA', 'date': 'Thu, 19 Nov 2026 12:00:24 GMT', 'content-length': '67'}, 'RetryAttempts': 0}, 'arn': 'arn:aws:s3tables:us-east-1:lakehouse:bucket/iceberg-data'}
+```
+
+The make a iceberg catalog with it
+
+```conf
+connector.name=iceberg
+iceberg.catalog.type=rest
+iceberg.rest-catalog.uri=http://seaweedfs:8181
+
+
+# fs.native-s3.enabled=true
+# fs.hadoop.enabled=false
+fs.s3.enabled=true
+s3.endpoint=http://seaweedfs:8333
+s3.region=us-east-1
+iceberg.rest-catalog.warehouse=s3://iceberg-data
+iceberg.rest-catalog.security=SIGV4
+s3.signer-type=AwsS3V4Signer
+s3.aws-access-key=lakehouse
+s3.aws-secret-key=lakehouse-secret
+
+s3.path-style-access=true
+iceberg.file-format=PARQUET
+iceberg.unique-table-location=true
+
+# Optimized materialized views to cleanup metadata and snapshots
+iceberg.delete-after-commit-enabled=true
+iceberg.max-previous-versions=1
+iceberg.incremental-refresh-enabled=false
+iceberg.expire-snapshots.min-retention=1m
+iceberg.remove-orphan-files.min-retention=1m
+iceberg.materialized-views.refresh-snapshot-retention-period=1m
+iceberg.register-table-procedure.enabled=true
+```
+
+The we can create a schema with it
+
+```sql
+trino> CREATE SCHEMA iceberg.test_schema;
+CREATE SCHEMA
+trino> show create schema iceberg.test_schema;
+                 Create Schema
+-----------------------------------------------
+ CREATE SCHEMA iceberg.test_schema
+ WITH (
+    location = 's3://iceberg-data/test_schema'
+ )
+(1 row)
+
+Query 20261119_123212_00011_a52nh, FINISHED, 1 node
+```
+
+And create tables
+
+```sql
+trino> CREATE TABLE iceberg.test_schema.orders_raw_10 (
+    ->     event_id varchar,
+    ->     event_type varchar,
+    ->     ts varchar,
+    ->     location_id bigint,
+    ->     order_id varchar,
+    ->     body varchar,
+    ->     event_date date
+    -> );
+    ->
+CREATE TABLE
+trino> Insert into iceberg.test_schema.orders_raw_10
+    -> select * from delta_lake.default.orders_raw limit 10;
+    ->
+INSERT: 10 rows
+```
+
+we can even create another table bucket and create a schema in it
+
+```bash
+·> python script_s3table_create_bucket.py trino-iceberg
+{'ResponseMetadata': {'RequestId': '18E9746F62B1C853758814B5', 'HostId': '', 'HTTPStatusCode': 200, 'HTTPHeaders': {'content-type': 'application/x-amz-json-1.1', 'server': 'SeaweedFS 30GB 4.53', 'x-amz-request-id': '18E9746F62B1C853758814B5', 'date': 'Thu, 19 Nov 2026 13:12:28 GMT', 'content-length': '68'}, 'RetryAttempts': 0}, 'arn': 'arn:aws:s3tables:us-east-1:lakehouse:bucket/trino-iceberg'}
+```
+
+```sql
+trino> CREATE SCHEMA iceberg.analytics
+    -> WITH (location = 's3://trino-iceberg/schemas/analytics/');
+    ->
+CREATE SCHEMA
+```
+
+but this schema is not usable. It seems that the catalog supports only the schemas created in the same catalog bucket.
+
 # Orchestration: Airflow runs the pipeline and the maintenance
+
+## Run the SDP pipeline from Airflow
 
 ```mermaid
 flowchart LR
@@ -451,24 +735,50 @@ lakehouse.tutorial.live_totals: 1 files -> 1
 lakehouse.tutorial.orders_raw: 3 files -> 1
 ```
 
-```bash
-·> python read_iceberg.py
-Reading s3://lakehouse/tables/orders_raw/metadata/00000-15792122-a75a-430d-a354-123409a50c06.metadata.json
+## A pipeline for external tables of Unity Catalog
 
-PyIceberg: 34,021 rows (Iceberg v2, converted from Delta version 3)
+![Airflow Non UC Dag](./airflow-non-uc-dag.png)
 
-┌────────────┬────────┐
-│ event_date │ events │
-│    date    │ int64  │
-├────────────┼────────┤
-│ 2026-09-01 │   4720 │
-│ 2026-09-02 │   4382 │
-│ 2026-09-03 │   5479 │
-│ 2026-09-04 │   4508 │
-│ 2026-09-05 │   5194 │
-│ 2026-09-06 │   4962 │
-│ 2026-09-07 │   4776 │
-└────────────┴────────┘
+Then we can register the tables into Trino catalog
+
+```sql
+trino> create schema delta_lake.medallion
+trino> CALL delta_lake.system.register_table(
+    ->     schema_name => 'medallion',
+    ->     table_name => 'orders_bronze',
+    ->     table_location => 's3://lakehouse/tables/bronze/orders'
+    -> );
+trino> select count(*) from delta_lake.medallion.orders_bronze;
+ _col0
+-------
+ 34021
+(1 row)
+trino> CALL delta_lake.system.register_table(
+    ->     schema_name => 'medallion',
+    ->     table_name => 'locations_bronze',
+    ->     table_location => 's3://lakehouse/tables/bronze/new_locations'
+    -> );
+trino> select * from delta_lake.medallion.locations_bronze;
+ location_id |     city
+-------------+---------------
+           1 | Oakland
+           2 | Berkeley
+           3 | San Francisco
+           4 | San Jose
+trino> CALL delta_lake.system.register_table(
+    ->     schema_name => 'medallion',
+    ->     table_name => 'revenue_by_brand_gold',
+    ->     table_location => 's3://lakehouse/tables/gold/revenue_by_brand'
+    -> );
+trino> select * from delta_lake.medallion.revenue_by_brand_gold;
+     brand     | orders |  revenue  | avg_order
+---------------+--------+-----------+-----------
+ Curry House   |   2219 | 133432.76 |     60.13
+ Taco Loco     |   2168 |  71548.53 |      33.0
+ Pizza Planet  |   2233 |  93402.24 |     41.83
+ Sushi Express |   2140 | 160332.61 |     74.92
+ Wok This Way  |   2152 | 118668.13 |     55.14
+(5 rows)
 ```
 
 # ML: MLflow tracks what you compute
@@ -547,19 +857,8 @@ flowchart LR
   af_SC -->|"REST"| af_UC
 ```
 
-# Trino Set-Up
 
-## Iceberg REST catalog
-
-Seaweedfs supports a REST API for serving Iceberg catalog.
-But we need a Table S3 bucket, not a ordinary S3 bucket
-
-```sh
-> docker compose exec seaweedfs weed shell
-> s3tables.bucket -create -name iceberg-data -account 000000000000 -format ICEBERG
-```
-
-# Profiles
+# Docker Compose with Profiles
 
 We can launch docker compose services with profiles, for example for seaweedfs storage only:
 ```bash
@@ -575,4 +874,10 @@ We can stop all profiles
 
 ```bash
 ·> docker compose --profile "*" down
+```
+
+Or we can launch services excluding some profiles
+
+```
+> COMPOSE_PROFILES=$(docker compose config --profiles | grep -vE '^(airflow|mlflow|streaming)$' | paste -sd, -) docker compose up -d --wait
 ```

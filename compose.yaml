@@ -12,7 +12,7 @@ services:
       - "${S3_PORT:-8333}:8333"
       - "${ICEBERG_REST:-8181}:8181"
     volumes:
-      - ./s3.json:/etc/seaweedfs/s3.json:ro
+      - ./seaweedfs/conf/s3.json:/etc/seaweedfs/s3.json:ro
       - seaweedfs-data:/data
     healthcheck:
       test: wget -qO /dev/null http://127.0.0.1:8333/status
@@ -145,7 +145,7 @@ services:
       - "${AIRFLOW_PORT:-8085}:8080"
     volumes:
       - airflow-data:/opt/airflow
-      - ./dags:/opt/airflow/dags
+      - ./airflow/dags:/opt/airflow/dags
       - ./pipeline:/opt/airflow/pipeline
     healthcheck:
       test: curl -sf http://localhost:8080/api/v2/monitor/health
@@ -232,7 +232,7 @@ services:
         - ./hive/conf/metastore-site.xml:/opt/hive/conf/core-site.xml:ro
     networks:
       - hive_net
-      # - lakehouse_net
+      - lakehouse_net
 
   trino:
     image: trinodb/trino:484
@@ -245,6 +245,7 @@ services:
       - hive-metastore
     networks:
       - lakehouse_net
+      # - hive_net
     ports:
       - "${TRINO_PORT:-8090}:8080" # Trino UI & JDBC/CLI port mapped to 8081 to avoid conflict with UC
     volumes:

@@ -1,7 +1,0 @@
-{
-  "fields": [
-    { "metadata": {}, "name": "location_id", "nullable": true, "type": "long" },
-    { "metadata": {}, "name": "city", "nullable": true, "type": "string" }
-  ],
-  "type": "struct"
-}

@@ -1,11 +1,3 @@
-CALL hive.system.register_table(
-    schema_name => 'default',
-    table_name => 'orders_raw',
-    table_location => 's3://lakehouse/tables/orders_raw',
-    metadata_file_name => '00000-5fffed41-32f0-4166-9871-7f8a32c639b3.metadata.json'
-);
-
-
 CALL delta_lake.system.register_table(
     schema_name => 'default',
     table_name => 'orders_raw',
@@ -19,31 +11,33 @@ CREATE OR REPLACE TABLE delta_lake.analytics.orders_raw_10
 AS select * from delta_lake.default.orders_raw limit 10;
 
 
-trino> CREATE OR REPLACE TABLE delta_lake.analytics.orders_raw_10
-    -> AS select * from delta_lake.default.orders_raw limit 10;
-    ->
-CREATE TABLE: 10 rows
+CALL delta_lake.system.register_table(
+    schema_name => 'analytics',
+    table_name => 'orders_bronze',
+    table_location => 's3://lakehouse/managed/__unitystorage/catalogs/ca354fda-466e-4e8f-bd08-8abc26629c21/tables/f1d85cd3-ca69-41fe-a803-c494b3c2e535'
+);
+-> failed
 
-Query 20261114_165421_00042_fkbnw, FINISHED, 1 node
-Splits: 37 total, 37 done (100.00%)
-0.56 [15 rows, 764KiB] [26 rows/s, 1.33MiB/s]
 
-trino> show create table delta_lake.analytics.orders_raw_10;
-                                          Create Table
--------------------------------------------------------------------------------------------------
- CREATE TABLE delta_lake.analytics.orders_raw_10 (
-    event_id varchar,
-    event_type varchar,
-    ts varchar,
-    location_id bigint,
-    order_id varchar,
-    body varchar,
-    event_date date
- )
- WITH (
-    location = 's3://lakehouse/schemas/analytics/orders_raw_10-73fd14e425ca4af3a0642076d3f6bda0'
- )
-(1 row)
+CALL delta_lake.system.register_table(
+    schema_name => 'medallion',
+    table_name => 'orders_bronze',
+    table_location => 's3://lakehouse/tables/bronze/orders'
+);
+
+CALL delta_lake.system.register_table(
+    schema_name => 'medallion',
+    table_name => 'locations_bronze',
+    table_location => 's3://lakehouse/tables/bronze/new_locations'
+);
+
+CALL delta_lake.system.register_table(
+    schema_name => 'medallion',
+    table_name => 'revenue_by_brand_gold',
+    table_location => 's3://lakehouse/tables/gold/revenue_by_brand'
+);
+
+
 
 CALL delta_lake.system.register_table(
     schema_name => 'analytics',
@@ -79,7 +73,6 @@ CALL delta_lake.system.register_table(
     table_location => 's3://lakehouse/managed/__unitystorage/catalogs/db429ef6-ea85-42d7-9264-6056d517f830/tables/3dd1777e-4ac4-48bf-a1cd-9f4d13b589b7'
 );
 
-CALL delta_lake.system.unregister_table(schema_name => 'analytics', table_name => 'orders_bronze');
 
 CALL delta_lake.system.register_table(
     schema_name => 'analytics',
@@ -87,27 +80,51 @@ CALL delta_lake.system.register_table(
     table_location => 's3://lakehouse/tables/live_totals'
 );
 
-CREATE SCHEMA hive.test_schema
-WITH (location = 's3://trino-iceberg/schemas/test_schema/');
+CREATE SCHEMA iceberg.test_schema;
 
-
-CREATE TABLE hive.test_schema.yearly_clicks (
-    year,
-    clicks
-)
-WITH (
-    partitioning = ARRAY['year']
-)
-AS VALUES
-    (2021, 10000),
-    (2022, 20000);
-
-
-CALL hive.system.register_table(
-    schema_name => 'default',
+CALL iceberg.system.register_table(
+    schema_name => 'test_schema',
     table_name => 'orders_raw',
     table_location => 's3://lakehouse/tables/orders_raw',
-    metadata_file_name => '00000-5fffed41-32f0-4166-9871-7f8a32c639b3.metadata.json'
+    metadata_file_name => '00000-2a00378b-76c7-4058-96b5-b49d05e2520a.metadata.json'
+);
+
+CREATE TABLE iceberg.test_schema.orders_raw_10 (
+    event_id varchar,
+    event_type varchar,
+    ts varchar,
+    location_id bigint,
+    order_id varchar,
+    body varchar,
+    event_date date
+);
+
+
+Insert into iceberg.test_schema.orders_raw_10
+select * from delta_lake.default.orders_raw limit 10;
+
+
+CREATE SCHEMA iceberg.analytics
+WITH (location = 's3://trino-iceberg/schemas/analytics/');
+
+
+CALL iceberg.system.register_table(
+    schema_name => 'analytics',
+    table_name => 'orders_raw',
+    table_location => 's3://lakehouse/tables/orders_raw',
+    metadata_file_name => '00000-2a00378b-76c7-4058-96b5-b49d05e2520a.metadata.json'
+);
+=> Fail
+
+
+CREATE TABLE iceberg.analytics.orders_raw_10 (
+    event_id varchar,
+    event_type varchar,
+    ts varchar,
+    location_id bigint,
+    order_id varchar,
+    body varchar,
+    event_date date
 );
 
 
